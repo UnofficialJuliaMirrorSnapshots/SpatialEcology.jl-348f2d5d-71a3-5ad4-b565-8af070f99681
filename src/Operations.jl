@@ -17,9 +17,9 @@ aggregate(gr::GridTopology, factor) = _grid_from_factor(gr, factor)
 aggregate(gr::SEGrid, factor::Integer) = (g = _grid_from_factor(gr.grid, factor); aggregate(gr, g))
 aggregate(gr::SEGrid, newgrid::GridTopology) = (ind = _apply_grid(gr, newgrid); GridData(sortslices(unique(ind, dims = 1), dims = 1), newgrid))
 
-function aggregate(asm::SEAssemblage{D, T, P}, factor::Union{Integer, Tuple{Integer, Integer}}, fun = _default_fun(D)) where D where T where P <: SELocations
+function aggregate(asm::SEAssemblage{D, T, P}, factor::Union{Integer, Tuple{Integer, Integer}}, fun = _default_fun(D); xmin = nothing, ymin = nothing) where D where T where P <: SELocations
 
-    gt = _grid_from_factor(asm.site.coords, factor)
+    gt = _grid_from_factor(asm.site.coords, factor; xmin = xmin, ymin = ymin)
     aggregate(asm, gt, fun)
 end
 
@@ -31,9 +31,26 @@ function aggregate(asm::SEAssemblage{D}, gt::GridTopology, fun = _default_fun(D)
 
     # fill a new occurrence matrix
     retmat = spzeros(D, nspecies(asm), size(tmpsites, 1))
+
+    # get a dictionary of the indices of each new group
+    groupinds = Dict{typeof(first(eachrow(tmpgrid))), Vector{Int}}()
+    for (i, row) in enumerate(eachrow(tmpgrid))
+        if haskey(groupinds, row)
+            push!(groupinds[row], i)
+        else
+            groupinds[row] = [i]
+        end
+    end
+
     for newcell in axes(tmpsites, 1)
-        inds = findall(x->tmpgrid[x, :] == tmpsites[newcell, :], 1:size(tmpgrid, 1))
-        retmat[:, newcell] = mapslices(fun, view(occurrences(asm), :, inds), dims = 2)
+        inds = groupinds[tmpsites[newcell, :]]
+        if fun === Base.any
+            retmat[nzrows(view(occurrences(asm), :, inds)), newcell] .= true
+        elseif fun === Base.sum
+            retmat[:, newcell] .= vec(colsum(view(occurrences(asm), :, inds)))
+        else
+            retmat[:, newcell] .= vec(mapslices(fun, occurrences(asm)[:, inds], dims = 2))
+        end
     end
 
     #build the basic objects
@@ -57,15 +74,18 @@ function _apply_grid(gr::SEGrid, newgrid::GridTopology)
 end
 _apply_grid(pt::SEPoints, newgrid::GridTopology) = getindices(coordinates(pt), newgrid)
 
-_range_from_factor(mi, ma, factor) =
-    range((floor(mi / factor) + 0.5) * factor, stop = (ceil(ma/factor) - 0.5) * factor, step = factor)
-
-function _grid_from_factor(pt::SEPoints, factor)
-    (xmi, xma), (ymi, yma) = mapslices(extrema, coordinates(pt), dims = 1)
-    GridTopology(_range_from_factor(xmi, xma, first(factor)), _range_from_factor(ymi, yma, last(factor)))
+function _range_from_factor(mi, ma, factor; inmin = nothing)
+    newmin = isnothing(inmin) ? (floor(mi / factor) + 0.5) * factor : inmin
+    newmax = isnothing(inmin) ? (ceil(ma/factor) - 0.5) * factor : floor((ma - inmin) / factor) * factor + inmin
+    range(newmin, stop = newmax, step = factor)
 end
-_grid_from_factor(gd::SEGrid, factor) = _grid_from_factor(gd.grid, factor)
-_grid_from_factor(gd::GridTopology, factor) = GridTopology(_range_from_factor(extrema(gd.xs)..., first(factor)), _range_from_factor(extrema(gd.ys)..., last(factor)))
+
+function _grid_from_factor(pt::SEPoints, factor; xmin = nothing, ymin = nothing)
+    (xmi, xma), (ymi, yma) = mapslices(extrema, coordinates(pt), dims = 1)
+    GridTopology(_range_from_factor(xmi, xma, first(factor); inmin = xmin), _range_from_factor(ymi, yma, last(factor); inmin = ymin))
+end
+_grid_from_factor(gd::SEGrid, factor; xmin = nothing, ymin = nothing) = _grid_from_factor(gd.grid, factor; xmin = xmin, ymin = ymin)
+_grid_from_factor(gd::GridTopology, factor; xmin = nothing, ymin = nothing) = GridTopology(_range_from_factor(extrema(gd.xs)..., first(factor); inmin = xmin), _range_from_factor(extrema(gd.ys)..., last(factor); inmin = ymin))
 
 _default_fun(::Type{Bool}) = Base.any
 _default_fun(::Type{Integer}) = Base.sum
